@@ -1,7 +1,7 @@
 #!/bin/bash
 export LANG=en_US.UTF-8
 mkdir -p "$HOME/agsbx"
-url='https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh'
+url='https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh'
 case "${*##* }" in list|del|upx|ups|upa|res) ;; *)
 cmd=""
 for v in uuid vlpt vmpt vwpt hypt tupt xhpt vxpt anpt arpt sspt sopt nvpt xupt xcpt reym cdnym argo agn agk warp name oap; do
@@ -58,11 +58,11 @@ export warp=${warp:-''}
 export name=${name:-''}
 export oap=${oap:-''}
 v46url="https://icanhazip.com"
-agsbxurl="https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh"
+agsbxurl="https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh"
 showmode(){
 [ -s "$HOME/agsbx/sh.txt" ] && echo "上次输入的完整脚本：$(cat "$HOME/agsbx/sh.txt")"
 echo "Argosbx脚本一键SSH命令生器在线网址：https://yonggekkk.github.io/argosbx/"
-echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh) 或 bash <(wget -qO- https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh)"
+echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh) 或 bash <(wget -qO- https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh)"
 echo "显示节点信息命令：agsbx list 【或者】 主脚本 list"
 echo "重置变量组命令：自定义各种协议变量组 agsbx rep 【或者】 自定义各种协议变量组 主脚本 rep"
 echo "更新脚本命令：原已安装的自定义各种协议变量组 主脚本 rep"
@@ -176,11 +176,119 @@ case "$warp" in *s6*|x) sbyx='ipv6_only' ;; *) sbyx='prefer_ipv4' ;; esac
 case "$warp" in *x6*) xryx='ForceIPv6' ;; *x*) xryx='ForceIPv4v6' ;; *) xryx='ForceIPv6v4' ;; esac
 fi
 }
+# Official Xray releases only; download and validate before replacing a running core.
+xray_download(){
+local source_url="$1" destination="$2"
+if command -v curl >/dev/null 2>&1; then
+curl -fLsS --connect-timeout 15 --max-time 300 --retry 2 "$source_url" -o "$destination"
+elif command -v wget >/dev/null 2>&1; then
+wget -q --timeout=30 --tries=3 -O "$destination" "$source_url"
+else
+return 1
+fi
+}
+xray_dependencies(){
+if command -v jq >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1; then return 0; fi
+if [ "$EUID" -eq 0 ]; then
+if command -v apk >/dev/null 2>&1; then
+apk add --no-cache jq unzip >/dev/null 2>&1
+elif command -v apt-get >/dev/null 2>&1; then
+apt-get update >/dev/null 2>&1 && apt-get install -y jq unzip >/dev/null 2>&1
+elif command -v dnf >/dev/null 2>&1; then
+dnf install -y jq unzip >/dev/null 2>&1
+elif command -v yum >/dev/null 2>&1; then
+yum install -y jq unzip >/dev/null 2>&1
+fi
+fi
+command -v jq >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 || {
+echo "Xray更新需要jq和unzip，请安装后重试；原内核未更改。" >&2
+return 1
+}
+}
+xray_migrate_config(){
+# Preserve IDs, ports, encryption, routing and WARP; migrate removed/obsolete fields.
+jq '
+  def transport:
+    if .streamSettings.network? == "tcp" then .streamSettings.network = "raw" else . end
+    | if .streamSettings.tcpSettings? != null then
+        .streamSettings.rawSettings = (.streamSettings.rawSettings // .streamSettings.tcpSettings)
+        | del(.streamSettings.tcpSettings)
+      else . end;
+  .inbounds |= map(transport
+      | if .streamSettings.realitySettings.dest? != null then
+          .streamSettings.realitySettings.target = (.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest)
+          | del(.streamSettings.realitySettings.dest)
+        else . end
+      | del(.streamSettings.realitySettings.fingerprint))
+  | .outbounds |= map(
+      transport
+      | if .protocol == "freedom" and .settings.domainStrategy? != null then
+          .streamSettings.sockopt.domainStrategy = (.streamSettings.sockopt.domainStrategy // .settings.domainStrategy)
+          | del(.settings.domainStrategy)
+        else . end
+      | if .proxySettings? != null then
+          if .proxySettings.transportLayer? == true then
+            error("Custom transportLayer proxySettings requires manual migration")
+          else
+            .streamSettings.sockopt.dialerProxy = (.streamSettings.sockopt.dialerProxy // .proxySettings.tag)
+            | del(.proxySettings)
+          end
+        else . end
+    )
+' "$1" > "$2"
+}
 upxray(){
-url="https://github.com/yonggekkk/argosbx/releases/download/argosbx/xray-$cpu"; out="$HOME/agsbx/xray"; (command -v curl >/dev/null 2>&1 && curl -Lo "$out" -# --retry 2 "$url") || (command -v wget>/dev/null 2>&1 && timeout 3 wget -O "$out" --tries=2 "$url")
-chmod +x "$HOME/agsbx/xray"
-sbcore=$("$HOME/agsbx/xray" version 2>/dev/null | awk '/^Xray/{print $2}')
-echo "已安装Xray正式版内核：$sbcore"
+local asset tmp release_tag asset_url digest actual new_version
+xray_dependencies || return 1
+case "$cpu" in
+amd64) asset=Xray-linux-64.zip ;;
+arm64) asset=Xray-linux-arm64-v8a.zip ;;
+*) echo "不支持的Xray架构：$cpu" >&2; return 1 ;;
+esac
+tmp=$(mktemp -d "$HOME/agsbx/.xray-update.XXXXXX") || return 1
+if ! xray_download "https://api.github.com/repos/XTLS/Xray-core/releases/latest" "$tmp/release.json"; then
+ echo "无法获取Xray官方最新正式版，保留原内核。" >&2; rm -rf "$tmp"; return 1
+fi
+release_tag=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$tmp/release.json")
+asset_url=$(jq -er --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$tmp/release.json")
+digest=$(jq -er --arg asset "$asset" '.assets[] | select(.name == $asset) | .digest' "$tmp/release.json")
+if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+   [ "$asset_url" != "https://github.com/XTLS/Xray-core/releases/download/$release_tag/$asset" ] ||
+   [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+ echo "Xray官方版本或校验信息无效，保留原内核。" >&2; rm -rf "$tmp"; return 1
+fi
+echo "下载Xray官方最新正式版：$release_tag ($asset)"
+if ! xray_download "$asset_url" "$tmp/xray.zip"; then
+ echo "Xray下载失败，保留原内核。" >&2; rm -rf "$tmp"; return 1
+fi
+actual=$(sha256sum "$tmp/xray.zip" | awk '{print $1}')
+if [ "$actual" != "${digest#sha256:}" ] || ! unzip -oq "$tmp/xray.zip" xray -d "$tmp"; then
+ echo "Xray校验或解压失败，保留原内核。" >&2; rm -rf "$tmp"; return 1
+fi
+chmod +x "$tmp/xray"
+new_version=$("$tmp/xray" version 2>/dev/null | awk '/^Xray/{print $2}')
+if [ "$new_version" != "${release_tag#v}" ]; then
+ echo "Xray版本验证失败，保留原内核。" >&2; rm -rf "$tmp"; return 1
+fi
+if [ -f "$HOME/agsbx/xr.json" ]; then
+ if ! xray_migrate_config "$HOME/agsbx/xr.json" "$tmp/xr.json" ||
+    ! "$tmp/xray" run -test -c "$tmp/xr.json"; then
+  echo "新内核配置检查失败，原内核与配置未更改。" >&2; rm -rf "$tmp"; return 1
+ fi
+ cp -p "$HOME/agsbx/xr.json" "$HOME/agsbx/xr.json.bak" || { rm -rf "$tmp"; return 1; }
+fi
+if [ -f "$HOME/agsbx/xray" ]; then
+ cp -p "$HOME/agsbx/xray" "$HOME/agsbx/xray.bak" || { rm -rf "$tmp"; return 1; }
+fi
+if [ -f "$tmp/xr.json" ]; then
+ mv -f "$tmp/xr.json" "$HOME/agsbx/xr.json" || { rm -rf "$tmp"; return 1; }
+fi
+if ! mv -f "$tmp/xray" "$HOME/agsbx/xray"; then
+ [ ! -f "$HOME/agsbx/xr.json.bak" ] || cp -p "$HOME/agsbx/xr.json.bak" "$HOME/agsbx/xr.json"
+ rm -rf "$tmp"; return 1
+fi
+rm -rf "$tmp"
+echo "已安装Xray官方最新正式版内核：$new_version"
 }
 upsingbox(){
 url="https://github.com/yonggekkk/argosbx/releases/download/argosbx/sing-box-$cpu"; out="$HOME/agsbx/sing-box"; (command -v curl>/dev/null 2>&1 && curl -Lo "$out" -# --retry 2 "$url") || (command -v wget>/dev/null 2>&1 && timeout 3 wget -O "$out" --tries=2 "$url")
@@ -206,9 +314,7 @@ installxray(){
 echo
 echo "=========启用xray内核========="
 mkdir -p "$HOME/agsbx/xrk"
-if [ ! -e "$HOME/agsbx/xray" ]; then
-upxray
-fi
+upxray || exit 1
 cat > "$HOME/agsbx/xr.json" <<EOF
 {
   "log": {
@@ -277,7 +383,6 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
         "network": "xhttp",
         "security": "reality",
         "realitySettings": {
-          "fingerprint": "chrome",
           "target": "${ym_vl_re}:443",
           "serverNames": [
             "${ym_vl_re}"
@@ -529,11 +634,10 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
                 "decryption": "none"
             },
             "streamSettings": {
-                "network": "tcp",
+                "network": "raw",
                 "security": "reality",
                 "realitySettings": {
-                    "fingerprint": "chrome",
-                    "dest": "${ym_vl_re}:443",
+                    "target": "${ym_vl_re}:443",
                     "serverNames": [
                       "${ym_vl_re}"
                     ],
@@ -969,9 +1073,11 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
     {
       "protocol": "freedom",
       "tag": "direct",
-      "settings": {
-      "domainStrategy":"${xryx}"
-     }
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "${xryx}"
+        }
+      }
     },
     {
       "tag": "x-warp-out",
@@ -998,12 +1104,12 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
     {
       "tag":"warp-out",
       "protocol":"freedom",
-        "settings":{
-        "domainStrategy":"${wxryx}"
-       },
-       "proxySettings":{
-       "tag":"x-warp-out"
-     }
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "${wxryx}",
+          "dialerProxy": "x-warp-out"
+        }
+      }
 }
   ],
   "routing": {
@@ -1024,6 +1130,10 @@ cat >> "$HOME/agsbx/xr.json" <<EOF
   }
 }
 EOF
+if ! "$HOME/agsbx/xray" run -test -c "$HOME/agsbx/xr.json"; then
+echo "Xray配置检查失败，已停止安装；请检查上面的错误信息。" >&2
+exit 1
+fi
 if pidof systemd >/dev/null 2>&1 && [ "$EUID" -eq 0 ]; then
 cat > /etc/systemd/system/xr.service <<EOF
 [Unit]
@@ -2575,9 +2685,12 @@ elif [ "$1" = "list" ]; then
 cip
 exit
 elif [ "$1" = "upx" ]; then
-for P in /proc/[0-9]*; do [ -L "$P/exe" ] || continue; TARGET=$(readlink -f "$P/exe" 2>/dev/null) || continue; case "$TARGET" in *"/agsbx/x"*) kill "$(basename "$P")" 2>/dev/null ;; esac; done
-kill -15 $(pgrep -f 'agsbx/x' 2>/dev/null) >/dev/null 2>&1
-upxray && xrestart && echo "Xray内核更新完成" && sleep 2 && cip
+# Keep the current service running until the download and migrated config pass validation.
+if upxray; then
+xrestart && echo "Xray内核更新完成" && sleep 2 && cip
+else
+exit 1
+fi
 exit
 elif [ "$1" = "ups" ]; then
 for P in /proc/[0-9]*; do [ -L "$P/exe" ] || continue; TARGET=$(readlink -f "$P/exe" 2>/dev/null) || continue; case "$TARGET" in *"/agsbx/s"*) kill "$(basename "$P")" 2>/dev/null ;; esac; done

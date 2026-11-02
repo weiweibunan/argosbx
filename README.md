@@ -1,3 +1,36 @@
+## 本 Fork：使用官方最新 Xray
+
+基于 [yonggekkk/argosbx](https://github.com/yonggekkk/argosbx)，保留原作者署名及 GPL-3.0 许可证。
+本 Fork 修改主脚本 `argosbx.sh` 的 Xray 下载、配置生成与升级兼容逻辑；Sing-box、Argo、协议选择及订阅参数保持原逻辑。
+
+- 安装、`rep` 重建或 `upx` 时，从 `XTLS/Xray-core` 的 GitHub Latest Release 获取最新正式版，支持 amd64 / arm64；不是后台定时升级。
+- 使用官方资产 SHA-256 校验，先下载、校验、执行配置检查，再替换内核。下载或配置检查失败时，`upx` 保留原内核和配置。
+- 新配置使用 `streamSettings.sockopt.domainStrategy`、`dialerProxy`、`raw` 和 REALITY `target`；移除服务端无效的 `fingerprint`。
+- `upx` 同时迁移原脚本生成的旧 `xr.json`，保留端口、UUID、密钥、协议与路由；替换前备份为 `xr.json.bak` 和 `xray.bak`。
+- 依赖 `jq`、`unzip`（root 自动尝试安装；非 root 需要预先安装）。GitHub API 不可用或限流时会退出，不回退到作者打包的内核。
+- 已用官方 Xray **v26.10.31** 校验 9 种 Xray 入站单独/组合配置及直连/WARP 路由。WebSocket、VMess 的官方弃用警告仍可能出现，保留这些协议以兼容原有节点。
+- 未来内核若再次破坏配置兼容性，脚本会在校验阶段停止，仍需针对新的格式更新模板；不能保证自动适配尚未发布的配置规范。
+
+### 使用本 Fork
+
+将原命令的脚本地址替换为下方地址，前面的协议变量保持原样：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh)
+```
+
+已安装旧版时，更新 Xray 并迁移现有 `xr.json`（无需重置协议）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh) upx
+```
+
+原项目网页生成器和 Docker/容器入口仍是上游实现；需要本修改时请使用上面的主脚本地址。
+
+验证：`bash -n argosbx.sh`，以及 `python3 tests/test_xray.py /path/to/official/xray`（需要 jq、openssl；隔离生成，不安装服务）。配置检查不等于 VPS 网络连通性实测。
+
+---
+
 ## Argosbx一键无交互小钢炮脚本💣：极简 + 轻量 + 快速
 
 ---------------------------------------
