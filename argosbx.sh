@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 mkdir -p "$HOME/agsbx"
 url='https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh'
-case "${*##* }" in list|del|upx|ups|upa|res) ;; *)
+case "${*##* }" in list|del|upx|upgeo|ups|upa|res) ;; *)
 cmd=""
 for v in uuid vlpt vmpt vwpt hypt tupt xhpt vxpt anpt arpt sspt sopt nvpt xupt xcpt reym cdnym argo agn agk warp name oap; do
 [ -n "${!v+x}" ] && cmd+="$v=\"${!v}\" "
@@ -67,6 +67,7 @@ echo "显示节点信息命令：agsbx list 【或者】 主脚本 list"
 echo "重置变量组命令：自定义各种协议变量组 agsbx rep 【或者】 自定义各种协议变量组 主脚本 rep"
 echo "更新脚本命令：原已安装的自定义各种协议变量组 主脚本 rep"
 echo "更新Xray或Singbox内核命令：agsbx upx或ups 【或者】 主脚本 upx或ups"
+echo "更新Xray GeoSite/GeoIP规则库：agsbx upgeo 【或者】 主脚本 upgeo"
 echo "重启脚本命令：agsbx res 【或者】 主脚本 res"
 echo "卸载脚本命令：agsbx del 【或者】 主脚本 del"
 echo "双栈VPS显示IPv4/IPv6节点配置命令：ippz=4或6 agsbx list 【或者】 ippz=4或6 主脚本 list"
@@ -237,6 +238,74 @@ jq '
     )
 ' "$1" > "$2"
 }
+# Stage official rule data separately from the core release (rules update more often).
+xray_stage_geodata(){
+local stage="$1" core="$2" tag asset file url digest actual
+xray_download "https://api.github.com/repos/XTLS/Xray-rules-dat/releases/latest" "$stage/geodata-release.json" || return 1
+tag=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$stage/geodata-release.json")
+[[ "$tag" =~ ^[0-9]+$ ]] || return 1
+# Preserve custom ext:*.dat files for the staged configuration check.
+for file in "$HOME/agsbx/"*.dat; do
+ [ ! -f "$file" ] || cp -p "$file" "$stage/" || return 1
+done
+for file in geoip geosite; do
+ case "$file" in geoip) asset=geoip-full.dat ;; geosite) asset=geosite-expand.dat ;; esac
+ url=$(jq -er --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url' "$stage/geodata-release.json")
+ digest=$(jq -er --arg asset "$asset" '.assets[] | select(.name == $asset) | .digest' "$stage/geodata-release.json")
+ [ "$url" = "https://github.com/XTLS/Xray-rules-dat/releases/download/$tag/$asset" ] || return 1
+ [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+ xray_download "$url" "$stage/$file.dat" || return 1
+ actual=$(sha256sum "$stage/$file.dat" | awk '{print $1}')
+ [ "$actual" = "${digest#sha256:}" ] || return 1
+done
+# Parse both databases even if the user's config does not reference them yet.
+cat > "$stage/geodata-test.json" <<'GEOEOF'
+{"outbounds":[{"protocol":"freedom","tag":"direct"}],"routing":{"rules":[{"type":"field","domain":["geosite:cn"],"outboundTag":"direct"},{"type":"field","ip":["geoip:cn"],"outboundTag":"direct"}]}}
+GEOEOF
+XRAY_LOCATION_ASSET="$stage" "$core" run -test -c "$stage/geodata-test.json" || return 1
+echo "$tag" > "$stage/geodata.version"
+echo "Xray官方GeoSite/GeoIP规则库校验通过：$tag"
+}
+# Back up all selected files first; restore the complete set on a failed replacement.
+xray_commit_files(){
+local stage="$1" file
+shift
+mkdir "$stage/previous" || return 1
+for file in "$@"; do
+ if [ -e "$HOME/agsbx/$file" ]; then
+  cp -p "$HOME/agsbx/$file" "$stage/previous/$file" || return 1
+  cp -p "$HOME/agsbx/$file" "$HOME/agsbx/$file.bak" || return 1
+ fi
+done
+for file in "$@"; do
+ if ! mv -f "$stage/$file" "$HOME/agsbx/$file"; then
+  for file in "$@"; do
+   if [ -e "$stage/previous/$file" ]; then
+    cp -p "$stage/previous/$file" "$HOME/agsbx/$file"
+   else
+    rm -f "$HOME/agsbx/$file"
+   fi
+  done
+  return 1
+ fi
+done
+}
+upgeodata(){
+local tmp
+[ -x "$HOME/agsbx/xray" ] || { echo "请先安装Xray。" >&2; return 1; }
+xray_dependencies || return 1
+tmp=$(mktemp -d "$HOME/agsbx/.geodata-update.XXXXXX") || return 1
+if ! xray_stage_geodata "$tmp" "$HOME/agsbx/xray" ||
+   { [ -f "$HOME/agsbx/xr.json" ] && ! XRAY_LOCATION_ASSET="$tmp" "$HOME/agsbx/xray" run -test -c "$HOME/agsbx/xr.json"; }; then
+ echo "规则库下载或配置校验失败，原规则库与配置未更改。" >&2
+ rm -rf "$tmp"; return 1
+fi
+if ! xray_commit_files "$tmp" geoip.dat geosite.dat geodata.version; then
+ rm -rf "$tmp"; return 1
+fi
+rm -rf "$tmp"
+echo "GeoSite/GeoIP规则库更新完成，现有xr.json未修改。"
+}
 upxray(){
 local asset tmp release_tag asset_url digest actual new_version
 xray_dependencies || return 1
@@ -270,21 +339,18 @@ new_version=$("$tmp/xray" version 2>/dev/null | awk '/^Xray/{print $2}')
 if [ "$new_version" != "${release_tag#v}" ]; then
  echo "Xray版本验证失败，保留原内核。" >&2; rm -rf "$tmp"; return 1
 fi
+if ! xray_stage_geodata "$tmp" "$tmp/xray"; then
+ echo "规则库下载或校验失败，原内核与配置未更改。" >&2; rm -rf "$tmp"; return 1
+fi
 if [ -f "$HOME/agsbx/xr.json" ]; then
  if ! xray_migrate_config "$HOME/agsbx/xr.json" "$tmp/xr.json" ||
-    ! "$tmp/xray" run -test -c "$tmp/xr.json"; then
+    ! XRAY_LOCATION_ASSET="$tmp" "$tmp/xray" run -test -c "$tmp/xr.json"; then
   echo "新内核配置检查失败，原内核与配置未更改。" >&2; rm -rf "$tmp"; return 1
  fi
- cp -p "$HOME/agsbx/xr.json" "$HOME/agsbx/xr.json.bak" || { rm -rf "$tmp"; return 1; }
 fi
-if [ -f "$HOME/agsbx/xray" ]; then
- cp -p "$HOME/agsbx/xray" "$HOME/agsbx/xray.bak" || { rm -rf "$tmp"; return 1; }
-fi
-if [ -f "$tmp/xr.json" ]; then
- mv -f "$tmp/xr.json" "$HOME/agsbx/xr.json" || { rm -rf "$tmp"; return 1; }
-fi
-if ! mv -f "$tmp/xray" "$HOME/agsbx/xray"; then
- [ ! -f "$HOME/agsbx/xr.json.bak" ] || cp -p "$HOME/agsbx/xr.json.bak" "$HOME/agsbx/xr.json"
+local files=(geoip.dat geosite.dat geodata.version xray)
+[ ! -f "$tmp/xr.json" ] || files+=(xr.json)
+if ! xray_commit_files "$tmp" "${files[@]}"; then
  rm -rf "$tmp"; return 1
 fi
 rm -rf "$tmp"
@@ -2684,6 +2750,9 @@ echo
 elif [ "$1" = "list" ]; then
 cip
 exit
+elif [ "$1" = "upgeo" ]; then
+upgeodata && xrestart
+exit $?
 elif [ "$1" = "upx" ]; then
 # Keep the current service running until the download and migrated config pass validation.
 if upxray; then
@@ -2883,3 +2952,4 @@ echo "相关快捷方式如下："
 showmode
 exit
 fi
+

@@ -11,6 +11,22 @@
 - 已用官方 Xray **v26.10.31** 校验 9 种 Xray 入站单独/组合配置及直连/WARP 路由。WebSocket、VMess 的官方弃用警告仍可能出现，保留这些协议以兼容原有节点。
 - 未来内核若再次破坏配置兼容性，脚本会在校验阶段停止，仍需针对新的格式更新模板；不能保证自动适配尚未发布的配置规范。
 
+### GeoSite / GeoIP 规则库
+
+安装或执行 `upx` 时，同时下载 [XTLS/Xray-rules-dat](https://github.com/XTLS/Xray-rules-dat) 最新正式发布中的 `geosite-expand.dat` 和 `geoip-full.dat`，保存为 `$HOME/agsbx/geosite.dat`、`geoip.dat`（root 默认路径为 `/root/agsbx/`）。与 Xray 官方安装器使用同一来源，独立于内核发布周期。
+
+已安装用户可直接补装或独立更新规则库：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/weiweibunan/argosbx/main/argosbx.sh) upgeo
+```
+
+更新成功后重启 Xray 加载规则库；不重写 `xr.json`，不修改 UUID、端口及已有分流。下载校验、规则库解析和现有配置检查全部通过后才替换，并保留 `.bak` 备份。未新增定时任务。旧快捷命令可能仍指向旧脚本，首次请使用上面的完整命令。
+
+之后可在 `routing.rules` 中引用 `geosite:cn`、`geoip:cn` 等规则（类别需在该规则库中存在）。自定义规则应放在原有兜底规则之前；脚本不会自动决定哪些流量直连或走 WARP。执行 `rep` 仍按上游行为重建配置，因此已有自定义分流时请使用 `upgeo` 或 `upx` 更新。
+
+规则库回归测试：`python3 tests/test_geodata.py /path/to/xray /path/to/geoip.dat /path/to/geosite.dat`。
+
 ### 使用本 Fork
 
 将原命令的脚本地址替换为下方地址，前面的协议变量保持原样：
